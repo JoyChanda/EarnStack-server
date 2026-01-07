@@ -32,6 +32,7 @@ async function run() {
     const usersCollection = db.collection("users");
     const tasksCollection = db.collection("tasks");
     const submissionsCollection = db.collection("submissions");
+    const paymentsCollection = db.collection("payments");
 
     // Ping to confirm connection
     await client.db("admin").command({ ping: 1 });
@@ -131,6 +132,27 @@ async function run() {
         coin: initialCoins,
       });
       res.send(result);
+    });
+
+    // --- PAYMENTS API ---
+    // Purchase coins (Buyer only)
+    app.post("/payments", verifyJWT, verifyBuyer, async (req, res) => {
+      const paymentData = req.body;
+      const { coin, email } = paymentData;
+
+      // 1. Record the payment
+      const result = await paymentsCollection.insertOne({
+        ...paymentData,
+        date: new Date(),
+      });
+
+      // 2. Increment coins in user profile
+      const updateResult = await usersCollection.updateOne(
+        { email },
+        { $inc: { coin: parseInt(coin) } }
+      );
+
+      res.send({ success: true, paymentId: result.insertedId });
     });
 
     // --- BASE API ---
