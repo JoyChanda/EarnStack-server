@@ -4,6 +4,12 @@ const { MongoClient, ServerApiVersion } = require('mongodb');
 const jwt = require("jsonwebtoken");
 require("dotenv").config();
 
+// Middleware
+const verifyJWT = require("./middleware/verifyJWT");
+const verifyAdmin = require("./middleware/verifyAdmin");
+const verifyBuyer = require("./middleware/verifyBuyer");
+const verifyWorker = require("./middleware/verifyWorker");
+
 const app = express();
 app.use(cors());
 app.use(express.json());
