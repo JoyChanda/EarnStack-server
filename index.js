@@ -33,6 +33,8 @@ async function run() {
     const tasksCollection = db.collection("tasks");
     const submissionsCollection = db.collection("submissions");
     const paymentsCollection = db.collection("payments");
+    const withdrawalsCollection = db.collection("withdrawals");
+
 
     // Ping to confirm connection
     await client.db("admin").command({ ping: 1 });
@@ -166,6 +168,25 @@ async function run() {
 
       res.send({ submissions: result, totalCount });
     });
+
+    // --- WITHDRAWALS API ---
+    // Request a withdrawal (Worker only)
+    app.post("/withdraw", verifyJWT, verifyWorker, async (req, res) => {
+      const withdrawalData = req.body;
+      const result = await withdrawalsCollection.insertOne({
+        ...withdrawalData,
+        status: "pending",
+        date: new Date(),
+      });
+      res.send({ success: true, withdrawalId: result.insertedId });
+    });
+
+    // Get all withdrawals (Admin only)
+    app.get("/withdrawals", verifyJWT, verifyAdmin, async (req, res) => {
+      const result = await withdrawalsCollection.find().sort({ date: -1 }).toArray();
+      res.send(result);
+    });
+
 
     // --- USERS API ---
     // Create or update user (Registration/Login)
