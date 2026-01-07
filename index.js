@@ -147,6 +147,26 @@ async function run() {
       res.send({ success: true, submissionId: result.insertedId });
     });
 
+    // Get submissions for a worker with pagination
+    app.get("/submissions", verifyJWT, async (req, res) => {
+      const email = req.query.email;
+      const page = parseInt(req.query.page) || 0;
+      const size = parseInt(req.query.size) || 10;
+
+      const query = { worker_email: email };
+      
+      const result = await submissionsCollection
+        .find(query)
+        .sort({ createdAt: -1 })
+        .skip(page * size)
+        .limit(size)
+        .toArray();
+
+      const totalCount = await submissionsCollection.countDocuments(query);
+
+      res.send({ submissions: result, totalCount });
+    });
+
     // --- USERS API ---
     // Create or update user (Registration/Login)
     app.post("/users", async (req, res) => {
