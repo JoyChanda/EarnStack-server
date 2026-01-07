@@ -87,6 +87,19 @@ async function run() {
       res.send(result);
     });
 
+    // Admin: Get all tasks
+    app.get("/admin/tasks", verifyJWT, verifyAdmin, async (req, res) => {
+      const result = await tasksCollection.find().sort({ createdAt: -1 }).toArray();
+      res.send(result);
+    });
+
+    // Admin: Delete task
+    app.delete("/tasks/:id", verifyJWT, verifyAdmin, async (req, res) => {
+      const id = req.params.id;
+      const result = await tasksCollection.deleteOne({ _id: new ObjectId(id) });
+      res.send(result);
+    });
+
     // --- SUBMISSIONS REVIEW API ---
     // Approve a submission
     app.patch("/submissions/approve/:id", verifyJWT, verifyBuyer, async (req, res) => {
@@ -184,6 +197,29 @@ async function run() {
     // Get all withdrawals (Admin only)
     app.get("/withdrawals", verifyJWT, verifyAdmin, async (req, res) => {
       const result = await withdrawalsCollection.find().sort({ date: -1 }).toArray();
+      res.send(result);
+    });
+
+    // Approve withdrawal (Admin only)
+    app.patch("/withdraw/approve/:id", verifyJWT, verifyAdmin, async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+
+      const withdraw = await withdrawalsCollection.findOne(query);
+      if (!withdraw) return res.status(404).send({ message: "Withdrawal request not found" });
+
+      // 1. Deduct coins from worker
+      await usersCollection.updateOne(
+        { email: withdraw.worker_email },
+        { $inc: { coin: -withdraw.withdrawal_coin } }
+      );
+
+      // 2. Update withdrawal status
+      const result = await withdrawalsCollection.updateOne(
+        query,
+        { $set: { status: "approved" } }
+      );
+
       res.send(result);
     });
 
