@@ -1,6 +1,6 @@
 const express = require("express");
 const cors = require("cors");
-const { MongoClient, ServerApiVersion } = require('mongodb');
+const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const jwt = require("jsonwebtoken");
 require("dotenv").config();
 
@@ -31,6 +31,7 @@ async function run() {
     const db = client.db("earnstackDB");
     const usersCollection = db.collection("users");
     const tasksCollection = db.collection("tasks");
+    const submissionsCollection = db.collection("submissions");
 
     // Ping to confirm connection
     await client.db("admin").command({ ping: 1 });
@@ -68,6 +69,47 @@ async function run() {
       );
 
       res.send({ success: true, taskId: result.insertedId });
+    });
+
+    // --- SUBMISSIONS REVIEW API ---
+    // Approve a submission
+    app.patch("/submissions/approve/:id", verifyJWT, verifyBuyer, async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      
+      const submission = await submissionsCollection.findOne(query);
+      if (!submission) return res.status(404).send({ message: "Submission not found" });
+
+      // 1. Update submission status
+      await submissionsCollection.updateOne(query, { $set: { status: "approved" } });
+
+      // 2. Add coins to worker
+      await usersCollection.updateOne(
+        { email: submission.worker_email },
+        { $inc: { coin: submission.payable_amount } }
+      );
+
+      res.send({ success: true });
+    });
+
+    // Reject a submission
+    app.patch("/submissions/reject/:id", verifyJWT, verifyBuyer, async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+
+      const submission = await submissionsCollection.findOne(query);
+      if (!submission) return res.status(404).send({ message: "Submission not found" });
+
+      // 1. Update submission status
+      await submissionsCollection.updateOne(query, { $set: { status: "rejected" } });
+
+      // 2. Increase required_workers in task
+      await tasksCollection.updateOne(
+        { _id: new ObjectId(submission.task_id) },
+        { $inc: { required_workers: 1 } }
+      );
+
+      res.send({ success: true });
     });
 
     // --- USERS API ---
