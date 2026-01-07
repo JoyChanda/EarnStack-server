@@ -72,6 +72,19 @@ async function run() {
       res.send({ success: true, taskId: result.insertedId });
     });
 
+    // Get all tasks (Public/Explore)
+    app.get("/tasks", async (req, res) => {
+      const result = await tasksCollection.find({ required_workers: { $gt: 0 } }).sort({ createdAt: -1 }).toArray();
+      res.send(result);
+    });
+
+    // Get single task by ID
+    app.get("/tasks/:id", async (req, res) => {
+      const id = req.params.id;
+      const result = await tasksCollection.findOne({ _id: new ObjectId(id) });
+      res.send(result);
+    });
+
     // --- SUBMISSIONS REVIEW API ---
     // Approve a submission
     app.patch("/submissions/approve/:id", verifyJWT, verifyBuyer, async (req, res) => {
@@ -113,6 +126,27 @@ async function run() {
       res.send({ success: true });
     });
 
+    // --- WORKER SUBMISSIONS API ---
+    // Submit work for a task (Worker only)
+    app.post("/submissions", verifyJWT, verifyWorker, async (req, res) => {
+      const submission = req.body;
+      
+      // 1. Insert Submission
+      const result = await submissionsCollection.insertOne({
+        ...submission,
+        status: "pending",
+        createdAt: new Date(),
+      });
+
+      // 2. Decrement Required Workers
+      await tasksCollection.updateOne(
+        { _id: new ObjectId(submission.task_id) },
+        { $inc: { required_workers: -1 } }
+      );
+
+      res.send({ success: true, submissionId: result.insertedId });
+    });
+
     // --- USERS API ---
     // Create or update user (Registration/Login)
     app.post("/users", async (req, res) => {
@@ -131,6 +165,13 @@ async function run() {
         ...user,
         coin: initialCoins,
       });
+      res.send(result);
+    });
+
+    // Get user by email
+    app.get("/users/:email", verifyJWT, async (req, res) => {
+      const email = req.params.email;
+      const result = await usersCollection.findOne({ email });
       res.send(result);
     });
 
