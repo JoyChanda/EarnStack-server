@@ -344,6 +344,57 @@ async function run() {
       res.send({ success: true, paymentId: result.insertedId });
     });
 
+    // --- DASHBOARD & STATS API ---
+    // Top 6 workers by coin (Public)
+    app.get("/top-workers", async (req, res) => {
+      const result = await usersCollection
+        .find({ role: "worker" })
+        .sort({ coin: -1 })
+        .limit(6)
+        .toArray();
+      res.send(result);
+    });
+
+    // Admin Stats (Admin only)
+    app.get("/admin-stats", verifyJWT, verifyAdmin, async (req, res) => {
+      const totalWorkers = await usersCollection.countDocuments({ role: "worker" });
+      const totalBuyers = await usersCollection.countDocuments({ role: "buyer" });
+      const users = await usersCollection.find().toArray();
+      const totalCoins = users.reduce((acc, user) => acc + (user.coin || 0), 0);
+      const totalPaymentsCount = await paymentsCollection.countDocuments();
+      
+      const payments = await paymentsCollection.find().toArray();
+      const totalPaymentAmount = payments.reduce((acc, p) => acc + (p.amount || 0), 0);
+
+      res.send({ totalWorkers, totalBuyers, totalCoins, totalPaymentsCount, totalPaymentAmount });
+    });
+
+    // Worker Stats (Worker only)
+    app.get("/worker-stats/:email", verifyJWT, verifyWorker, async (req, res) => {
+      const email = req.params.email;
+      const totalSubmissions = await submissionsCollection.countDocuments({ worker_email: email });
+      const pendingSubmissions = await submissionsCollection.countDocuments({ worker_email: email, status: "pending" });
+      
+      const approvedSubmissions = await submissionsCollection.find({ worker_email: email, status: "approved" }).toArray();
+      const totalEarnings = approvedSubmissions.reduce((acc, curr) => acc + curr.payable_amount, 0);
+
+      res.send({ totalSubmissions, pendingSubmissions, totalEarnings });
+    });
+
+    // Buyer Stats (Buyer only)
+    app.get("/buyer-stats/:email", verifyJWT, verifyBuyer, async (req, res) => {
+      const email = req.params.email;
+      const totalTasks = await tasksCollection.countDocuments({ buyer_email: email });
+      
+      const tasks = await tasksCollection.find({ buyer_email: email }).toArray();
+      const pendingTaskWorkers = tasks.reduce((acc, t) => acc + t.required_workers, 0);
+      
+      const payments = await paymentsCollection.find({ email: email }).toArray();
+      const totalPayment = payments.reduce((acc, p) => acc + (p.amount || 0), 0);
+
+      res.send({ totalTasks, pendingTaskWorkers, totalPayment });
+    });
+
     // --- BASE API ---
     app.get("/", (req, res) => res.send("EarnStack Server is running"));
 
