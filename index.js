@@ -216,6 +216,31 @@ async function run() {
       res.send(result);
     });
 
+    // Get all users (Admin only)
+    app.get("/users", verifyJWT, verifyAdmin, async (req, res) => {
+      const result = await usersCollection.find().toArray();
+      res.send(result);
+    });
+
+    // Update user role (Admin only)
+    app.patch("/users/role/:email", verifyJWT, verifyAdmin, async (req, res) => {
+      const email = req.params.email;
+      const { role } = req.body;
+      const result = await usersCollection.updateOne(
+        { email },
+        { $set: { role } }
+      );
+      res.send(result);
+    });
+
+    // Delete user (Admin only)
+    app.delete("/users/:id", verifyJWT, verifyAdmin, async (req, res) => {
+      const id = req.params.id;
+      const result = await usersCollection.deleteOne({ _id: new ObjectId(id) });
+      res.send(result);
+    });
+
+
     // --- PAYMENTS API ---
     // Purchase coins (Buyer only)
     app.post("/payments", verifyJWT, verifyBuyer, async (req, res) => {
