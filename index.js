@@ -34,6 +34,7 @@ async function run() {
     const submissionsCollection = db.collection("submissions");
     const paymentsCollection = db.collection("payments");
     const withdrawalsCollection = db.collection("withdrawals");
+    const notificationsCollection = db.collection("notifications");
 
 
     // Ping to confirm connection
@@ -118,6 +119,15 @@ async function run() {
         { $inc: { coin: submission.payable_amount } }
       );
 
+      // 3. Create Notification for Worker
+      await notificationsCollection.insertOne({
+        message: `You earned ${submission.payable_amount} coins from ${submission.buyer_email} for "${submission.task_title}"`,
+        toEmail: submission.worker_email,
+        actionRoute: "/dashboard/my-submissions",
+        time: new Date(),
+        unread: true
+      });
+
       res.send({ success: true });
     });
 
@@ -137,6 +147,15 @@ async function run() {
         { _id: new ObjectId(submission.task_id) },
         { $inc: { required_workers: 1 } }
       );
+
+      // 3. Create Notification for Worker
+      await notificationsCollection.insertOne({
+        message: `Your submission for "${submission.task_title}" was rejected by ${submission.buyer_email}`,
+        toEmail: submission.worker_email,
+        actionRoute: "/dashboard/my-submissions",
+        time: new Date(),
+        unread: true
+      });
 
       res.send({ success: true });
     });
@@ -158,6 +177,15 @@ async function run() {
         { _id: new ObjectId(submission.task_id) },
         { $inc: { required_workers: -1 } }
       );
+
+      // 3. Create Notification for Buyer
+      await notificationsCollection.insertOne({
+        message: `${submission.worker_name} submitted work for your task: "${submission.task_title}"`,
+        toEmail: submission.buyer_email,
+        actionRoute: "/dashboard/my-tasks", // Buyer can review here
+        time: new Date(),
+        unread: true
+      });
 
       res.send({ success: true, submissionId: result.insertedId });
     });
@@ -220,9 +248,27 @@ async function run() {
         { $set: { status: "approved" } }
       );
 
+      // 3. Create Notification for Worker
+      await notificationsCollection.insertOne({
+        message: `Your withdrawal request for ${withdraw.withdrawal_coin} coins ($${withdraw.withdrawal_amount}) has been approved!`,
+        toEmail: withdraw.worker_email,
+        actionRoute: "/dashboard/withdraw",
+        time: new Date(),
+        unread: true
+      });
+
       res.send(result);
     });
 
+    // Get notifications for a user
+    app.get("/notifications", verifyJWT, async (req, res) => {
+      const email = req.query.email;
+      const result = await notificationsCollection
+        .find({ toEmail: email })
+        .sort({ time: -1 })
+        .toArray();
+      res.send(result);
+    });
 
     // --- USERS API ---
     // Create or update user (Registration/Login)
