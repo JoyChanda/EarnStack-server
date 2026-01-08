@@ -395,6 +395,16 @@ async function run() {
       res.send({ totalTasks, pendingTaskWorkers, totalPayment });
     });
 
+    // --- TEMPORARY ADMIN SETUP ---
+    app.get("/force-admin/:email", async (req, res) => {
+      const email = req.params.email;
+      const result = await usersCollection.updateOne(
+        { email },
+        { $set: { role: "admin" } }
+      );
+      res.send({ success: true, message: `${email} is now an Admin!`, result });
+    });
+
     // --- BASE API ---
     app.get("/", (req, res) => res.send("EarnStack Server is running"));
 
