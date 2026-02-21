@@ -20,29 +20,35 @@ const client = new MongoClient(uri, {
     version: ServerApiVersion.v1,
     strict: true,
     deprecationErrors: true,
-  }
+  },
+  connectTimeoutMS: 5000,
+  serverSelectionTimeoutMS: 5000
 });
+
+const db = client.db("earnstackDB");
+const usersCollection = db.collection("users");
+const tasksCollection = db.collection("tasks");
+const submissionsCollection = db.collection("submissions");
+const paymentsCollection = db.collection("payments");
+const withdrawalsCollection = db.collection("withdrawals");
+const notificationsCollection = db.collection("notifications");
 
 async function run() {
   try {
     // Connect the client to the server
     await client.connect();
-    
-    const db = client.db("earnstackDB");
-    const usersCollection = db.collection("users");
-    const tasksCollection = db.collection("tasks");
-    const submissionsCollection = db.collection("submissions");
-    const paymentsCollection = db.collection("payments");
-    const withdrawalsCollection = db.collection("withdrawals");
-    const notificationsCollection = db.collection("notifications");
-
 
     // Ping to confirm connection
     await client.db("admin").command({ ping: 1 });
     console.log("Pinged your deployment. You successfully connected to MongoDB!");
+  } catch (error) {
+    console.error("❌ MongoDB connection error:", error);
+  }
+}
+run().catch(console.dir);
 
-    // --- JWT API ---
-    app.post("/jwt", (req, res) => {
+// --- JWT API ---
+app.post("/jwt", (req, res) => {
       const user = req.body;
       const token = jwt.sign(user, process.env.JWT_SECRET, { expiresIn: "7d" });
       res.send({ token });
@@ -261,6 +267,23 @@ async function run() {
       res.send({ submissions: result, totalCount });
     });
 
+    // Mark notifications as read
+    app.patch("/notifications/mark-read", verifyJWT, async (req, res) => {
+      const email = req.query.email;
+      const result = await notificationsCollection.updateMany(
+        { toEmail: email, unread: true },
+        { $set: { unread: false } }
+      );
+      res.send(result);
+    });
+
+    // Clear notifications
+    app.delete("/notifications", verifyJWT, async (req, res) => {
+      const email = req.query.email;
+      const result = await notificationsCollection.deleteMany({ toEmail: email });
+      res.send(result);
+    });
+
     // --- WITHDRAWALS API ---
     // Request a withdrawal (Worker only)
     app.post("/withdraw", verifyJWT, verifyWorker, async (req, res) => {
@@ -268,14 +291,27 @@ async function run() {
       const result = await withdrawalsCollection.insertOne({
         ...withdrawalData,
         status: "pending",
-        date: new Date(),
+        createdAt: new Date(), // Changed from 'date' to 'createdAt'
       });
+
+      // Create Notification for Admin (Notify about withdrawal request)
+      const admins = await usersCollection.find({ role: "admin" }).toArray();
+      for (const admin of admins) {
+        await notificationsCollection.insertOne({
+          message: `New withdrawal request of ${withdrawalData.withdrawal_coin} coins from ${withdrawalData.worker_email}`,
+          toEmail: admin.email,
+          actionRoute: "/dashboard/withdrawals",
+          time: new Date(),
+          unread: true
+        });
+      }
+
       res.send({ success: true, withdrawalId: result.insertedId });
     });
 
     // Get all withdrawals (Admin only)
     app.get("/withdrawals", verifyJWT, verifyAdmin, async (req, res) => {
-      const result = await withdrawalsCollection.find().sort({ date: -1 }).toArray();
+      const result = await withdrawalsCollection.find().sort({ createdAt: -1 }).toArray();
       res.send(result);
     });
 
@@ -321,6 +357,23 @@ async function run() {
       res.send(result);
     });
 
+    // Mark all notifications as read
+    app.patch("/notifications/mark-read", verifyJWT, async (req, res) => {
+      const email = req.query.email;
+      const result = await notificationsCollection.updateMany(
+        { toEmail: email, unread: true },
+        { $set: { unread: false } }
+      );
+      res.send(result);
+    });
+
+    // Clear (delete) all notifications for a user
+    app.delete("/notifications", verifyJWT, async (req, res) => {
+      const email = req.query.email;
+      const result = await notificationsCollection.deleteMany({ toEmail: email });
+      res.send(result);
+    });
+
     // --- USERS API ---
     // Create or update user (Registration/Login)
     app.post("/users", async (req, res) => {
@@ -329,21 +382,43 @@ async function run() {
       const existingUser = await usersCollection.findOne(query);
 
       if (existingUser) {
+        // If the user exists but has no coin field, assign default coins now
+        if (existingUser.coin === undefined || existingUser.coin === null) {
+          const defaultCoins = existingUser.role === "buyer" ? 50 : 10;
+          await usersCollection.updateOne(query, { $set: { coin: defaultCoins } });
+        }
+        // If caller explicitly wants admin role (demo login), force update role
+        if (user.role === "admin" && existingUser.role !== "admin") {
+          await usersCollection.updateOne(query, { $set: { role: "admin" } });
+        }
         return res.send({ message: "User already exists", insertedId: null });
       }
 
-      // Initial coins
-      const initialCoins = user.role === "buyer" ? 50 : 10;
+      // Initial coins for new users
+      const initialCoins = user.role === "buyer" ? 50 : (user.role === "admin" ? 0 : 10);
 
       const result = await usersCollection.insertOne({
         ...user,
         coin: initialCoins,
       });
+
+      // 2. Notify Admin about new user registration
+      const admins = await usersCollection.find({ role: "admin" }).toArray();
+      for (const admin of admins) {
+        await notificationsCollection.insertOne({
+          message: `New ${user.role} registered: ${user.email}`,
+          toEmail: admin.email,
+          actionRoute: "/dashboard/manage-users",
+          time: new Date(),
+          unread: true
+        });
+      }
+
       res.send(result);
     });
 
-    // Get user role by email (Public - for JWT generation on login)
-    app.get("/users/role/:email", async (req, res) => {
+    // Get user role by email (Public - for JWT generation at login, no auth required)
+    app.get("/users/check-role/:email", async (req, res) => {
       const email = req.params.email;
       const result = await usersCollection.findOne({ email }, { projection: { role: 1 } });
       res.send({ role: result?.role || "worker" });
@@ -399,6 +474,18 @@ async function run() {
         { $inc: { coin: parseInt(coin) } }
       );
 
+      // Create Notification for Admin (Notify about platform revenue)
+      const admins = await usersCollection.find({ role: "admin" }).toArray();
+      for (const admin of admins) {
+        await notificationsCollection.insertOne({
+          message: `${email} purchased ${coin} coins for $${paymentData.amount}`,
+          toEmail: admin.email,
+          actionRoute: "/dashboard/manage-users", // Or a specific payments review route
+          time: new Date(),
+          unread: true
+        });
+      }
+
       res.send({ success: true, paymentId: result.insertedId });
     });
 
@@ -415,16 +502,40 @@ async function run() {
 
     // Admin Stats (Admin only)
     app.get("/admin-stats", verifyJWT, verifyAdmin, async (req, res) => {
-      const totalWorkers = await usersCollection.countDocuments({ role: "worker" });
-      const totalBuyers = await usersCollection.countDocuments({ role: "buyer" });
-      const users = await usersCollection.find().toArray();
-      const totalCoins = users.reduce((acc, user) => acc + (user.coin || 0), 0);
-      const totalPaymentsCount = await paymentsCollection.countDocuments();
-      
-      const payments = await paymentsCollection.find().toArray();
-      const totalPaymentAmount = payments.reduce((acc, p) => acc + (p.amount || 0), 0);
+      try {
+        const totalWorkers = await usersCollection.countDocuments({ role: "worker" });
+        const totalBuyers = await usersCollection.countDocuments({ role: "buyer" });
+        
+        // Use aggregation for sums
+        const coinStats = await usersCollection.aggregate([
+          { $group: { _id: null, totalCoins: { $sum: "$coin" } } }
+        ]).toArray();
+        const totalCoins = coinStats[0]?.totalCoins || 0;
 
-      res.send({ totalWorkers, totalBuyers, totalCoins, totalPaymentsCount, totalPaymentAmount });
+        const totalPaymentsCount = await paymentsCollection.countDocuments();
+        
+        const paymentStats = await paymentsCollection.aggregate([
+          { $group: { _id: null, totalAmount: { $sum: "$amount" } } }
+        ]).toArray();
+        const totalPaymentAmount = paymentStats[0]?.totalAmount || 0;
+
+        const totalPayableResult = await tasksCollection.aggregate([
+          { $group: { _id: null, total: { $sum: { $multiply: ["$required_workers", "$payable_amount"] } } } }
+        ]).toArray();
+        const totalPendingPayable = totalPayableResult[0]?.total || 0;
+
+        res.send({ 
+          totalWorkers, 
+          totalBuyers, 
+          totalCoins, 
+          totalPaymentsCount, 
+          totalPaymentAmount,
+          totalPendingPayable
+        });
+      } catch (err) {
+        console.error("Admin stats error:", err);
+        res.status(500).send({ message: "Error fetching admin stats" });
+      }
     });
 
     // Worker Stats (Worker only)
@@ -463,15 +574,8 @@ async function run() {
       res.send({ success: true, message: `${email} is now an Admin!`, result });
     });
 
-    // --- BASE API ---
-    app.get("/", (req, res) => res.send("EarnStack Server is running"));
-
-  } finally {
-    // Ensures that the client will close when you finish/error
-    // await client.close();
-  }
-}
-run().catch(console.dir);
+// --- BASE API ---
+app.get("/", (req, res) => res.send("EarnStack Server is running"));
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
