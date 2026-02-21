@@ -94,6 +94,47 @@ async function run() {
       res.send(result);
     });
 
+    // Buyer: Get their own tasks
+    app.get("/tasks/buyer/:email", verifyJWT, verifyBuyer, async (req, res) => {
+      const email = req.params.email;
+      const result = await tasksCollection.find({ buyer_email: email }).sort({ createdAt: -1 }).toArray();
+      res.send(result);
+    });
+
+    // Buyer: Update a task
+    app.patch("/tasks/:id", verifyJWT, verifyBuyer, async (req, res) => {
+      const id = req.params.id;
+      const updates = req.body;
+      // Only allow updating non-financial fields
+      const allowed = ['task_title', 'task_detail', 'task_image_url', 'submission_info', 'completion_date'];
+      const updateData = {};
+      allowed.forEach(key => { if (updates[key] !== undefined) updateData[key] = updates[key]; });
+      const result = await tasksCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: updateData }
+      );
+      res.send(result);
+    });
+
+    // Buyer: Delete a task with coin refund for remaining worker slots
+    app.delete("/tasks/buyer/:id", verifyJWT, verifyBuyer, async (req, res) => {
+      const id = req.params.id;
+      const task = await tasksCollection.findOne({ _id: new ObjectId(id) });
+      if (!task) return res.status(404).send({ message: "Task not found" });
+
+      // Refund coins for remaining unfilled worker slots
+      const refundAmount = task.required_workers * task.payable_amount;
+      if (refundAmount > 0) {
+        await usersCollection.updateOne(
+          { email: task.buyer_email },
+          { $inc: { coin: refundAmount } }
+        );
+      }
+
+      const result = await tasksCollection.deleteOne({ _id: new ObjectId(id) });
+      res.send({ success: true, refundAmount });
+    });
+
     // Admin: Delete task
     app.delete("/tasks/:id", verifyJWT, verifyAdmin, async (req, res) => {
       const id = req.params.id;
@@ -188,6 +229,16 @@ async function run() {
       });
 
       res.send({ success: true, submissionId: result.insertedId });
+    });
+
+    // Get submissions for a specific task (Buyer review)
+    app.get("/submissions/task/:taskId", verifyJWT, verifyBuyer, async (req, res) => {
+      const taskId = req.params.taskId;
+      const result = await submissionsCollection
+        .find({ task_id: taskId })
+        .sort({ createdAt: -1 })
+        .toArray();
+      res.send(result);
     });
 
     // Get submissions for a worker with pagination
@@ -289,6 +340,13 @@ async function run() {
         coin: initialCoins,
       });
       res.send(result);
+    });
+
+    // Get user role by email (Public - for JWT generation on login)
+    app.get("/users/role/:email", async (req, res) => {
+      const email = req.params.email;
+      const result = await usersCollection.findOne({ email }, { projection: { role: 1 } });
+      res.send({ role: result?.role || "worker" });
     });
 
     // Get user by email
