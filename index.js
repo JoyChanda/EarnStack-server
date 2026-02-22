@@ -382,16 +382,12 @@ app.post("/jwt", (req, res) => {
       const existingUser = await usersCollection.findOne(query);
 
       if (existingUser) {
-        // If the user exists but has no coin field, assign default coins now
-        if (existingUser.coin === undefined || existingUser.coin === null) {
-          const defaultCoins = existingUser.role === "buyer" ? 50 : 10;
-          await usersCollection.updateOne(query, { $set: { coin: defaultCoins } });
+        // If caller explicitly wants a role (demo login), force update role
+        if (user.role && existingUser.role !== user.role) {
+          await usersCollection.updateOne(query, { $set: { role: user.role } });
+          console.log(`Updated user ${user.email} role to ${user.role}`);
         }
-        // If caller explicitly wants admin role (demo login), force update role
-        if (user.role === "admin" && existingUser.role !== "admin") {
-          await usersCollection.updateOne(query, { $set: { role: "admin" } });
-        }
-        return res.send({ message: "User already exists", insertedId: null });
+        return res.send({ message: "User updated/synced", success: true });
       }
 
       // Initial coins for new users
@@ -431,9 +427,9 @@ app.post("/jwt", (req, res) => {
       res.send(result);
     });
 
-    // Get all users (Admin only)
+    // Get all users (Admin only, excluding other admins)
     app.get("/users", verifyJWT, verifyAdmin, async (req, res) => {
-      const result = await usersCollection.find().toArray();
+      const result = await usersCollection.find({ role: { $ne: "admin" } }).toArray();
       res.send(result);
     });
 
@@ -503,38 +499,44 @@ app.post("/jwt", (req, res) => {
     // Admin Stats (Admin only)
     app.get("/admin-stats", verifyJWT, verifyAdmin, async (req, res) => {
       try {
-        const totalWorkers = await usersCollection.countDocuments({ role: "worker" });
-        const totalBuyers = await usersCollection.countDocuments({ role: "buyer" });
-        
-        // Use aggregation for sums
-        const coinStats = await usersCollection.aggregate([
-          { $group: { _id: null, totalCoins: { $sum: "$coin" } } }
-        ]).toArray();
-        const totalCoins = coinStats[0]?.totalCoins || 0;
+        const [
+          totalWorkers,
+          totalBuyers,
+          coinResult,
+          totalPayments,
+          paymentResult,
+          withdrawResult,
+          taskRevenueResult
+        ] = await Promise.all([
+          usersCollection.countDocuments({ role: "worker" }),
+          usersCollection.countDocuments({ role: "buyer" }),
+          usersCollection.aggregate([
+            { $group: { _id: null, total: { $sum: "$coin" } } }
+          ]).toArray(),
+          paymentsCollection.countDocuments(),
+          paymentsCollection.aggregate([
+            { $group: { _id: null, total: { $sum: "$amount" } } }
+          ]).toArray(),
+          withdrawalsCollection.aggregate([
+             { $group: { _id: null, total: { $sum: "$withdrawal_amount" } } }
+          ]).toArray(),
+          tasksCollection.aggregate([
+            { $group: { _id: null, total: { $sum: { $multiply: ["$required_workers", "$payable_amount"] } } } }
+          ]).toArray()
+        ]);
 
-        const totalPaymentsCount = await paymentsCollection.countDocuments();
-        
-        const paymentStats = await paymentsCollection.aggregate([
-          { $group: { _id: null, totalAmount: { $sum: "$amount" } } }
-        ]).toArray();
-        const totalPaymentAmount = paymentStats[0]?.totalAmount || 0;
-
-        const totalPayableResult = await tasksCollection.aggregate([
-          { $group: { _id: null, total: { $sum: { $multiply: ["$required_workers", "$payable_amount"] } } } }
-        ]).toArray();
-        const totalPendingPayable = totalPayableResult[0]?.total || 0;
-
-        res.send({ 
-          totalWorkers, 
-          totalBuyers, 
-          totalCoins, 
-          totalPaymentsCount, 
-          totalPaymentAmount,
-          totalPendingPayable
+        res.send({
+          totalWorkers,
+          totalBuyers,
+          totalCoins: coinResult[0]?.total || 0,
+          totalPaymentsCount: totalPayments,
+          totalPaymentAmount: paymentResult[0]?.total || 0,
+          totalWithdrawalAmount: withdrawResult[0]?.total || 0,
+          totalPendingRevenue: taskRevenueResult[0]?.total || 0
         });
-      } catch (err) {
-        console.error("Admin stats error:", err);
-        res.status(500).send({ message: "Error fetching admin stats" });
+      } catch (error) {
+        console.error("Admin stats error:", error);
+        res.status(500).send({ message: "Failed to fetch stats" });
       }
     });
 
